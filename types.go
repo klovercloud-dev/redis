@@ -3,25 +3,87 @@ package redis
 import "net"
 
 type Zone struct {
-	Name      string
-	Locations map[string]struct{}
+	Name      string              `json:"name"`
+	Locations map[string]struct{} `json:"locations"`
 }
 
 type Record struct {
-	A     []A_Record `json:"a,omitempty"`
-	AAAA  []AAAA_Record `json:"aaaa,omitempty"`
-	TXT   []TXT_Record `json:"txt,omitempty"`
-	CNAME []CNAME_Record `json:"cname,omitempty"`
-	NS    []NS_Record `json:"ns,omitempty"`
-	MX    []MX_Record `json:"mx,omitempty"`
-	SRV   []SRV_Record `json:"srv,omitempty"`
-	CAA   []CAA_Record `json:"caa,omitempty"`
-	SOA   SOA_Record `json:"soa,omitempty"`
+	A     New_A_Record     `json:"a,omitempty"`
+	AAAA  []AAAA_Record    `json:"aaaa,omitempty"`
+	TXT   []TXT_Record     `json:"txt,omitempty"`
+	CNAME New_CNAME_Record `json:"cname,omitempty"`
+	NS    []NS_Record      `json:"ns,omitempty"`
+	MX    []MX_Record      `json:"mx,omitempty"`
+	SRV   []SRV_Record     `json:"srv,omitempty"`
+	CAA   []CAA_Record     `json:"caa,omitempty"`
+	SOA   SOA_Record       `json:"soa,omitempty"`
 }
 
 type A_Record struct {
 	Ttl uint32 `json:"ttl,omitempty"`
 	Ip  net.IP `json:"ip"`
+}
+
+type CNAME_Record struct {
+	Ttl  uint32 `json:"ttl,omitempty"`
+	Host string `json:"host"`
+}
+
+type New_A_Record struct {
+	Type  string
+	Value interface{}
+}
+
+type New_CNAME_Record struct {
+	Type  string
+	Value interface{}
+}
+
+type Simple_CNAME_Record struct {
+	Value []CNAME_Record `json:"value"`
+}
+
+type FailOver_CNAME_Record struct {
+	Primary   FailOver_CNAME_Data `json:"primary"`
+	Secondary FailOver_CNAME_Data `json:"secondary"`
+}
+
+type FailOver_CNAME_Data struct {
+	Data              []CNAME_Record            `json:"data"`
+	IsHealthy         bool                      `json:"isHealthy"`
+	HealthCheckConfig FailOverHealthCheckConfig `json:"healthCheckConfig"`
+}
+
+type Geo_Location struct {
+	Location string
+	Value    map[string][]A_Record
+}
+
+type Geo_Location_CNAME struct {
+	Location string
+	Value    map[string][]CNAME_Record
+}
+
+type General_A_Record struct {
+	Value []A_Record
+}
+
+type FailOver_A_Record struct {
+	Primary   FailOverData
+	Secondary FailOverData
+}
+
+type FailOverData struct {
+	Data              []A_Record
+	IsHealthy         bool
+	HealthCheckConfig FailOverHealthCheckConfig
+}
+
+type FailOverHealthCheckConfig struct {
+	Type      string
+	TargetIPs []string
+	Port      string
+	TargetUrl string
 }
 
 type AAAA_Record struct {
@@ -32,11 +94,6 @@ type AAAA_Record struct {
 type TXT_Record struct {
 	Ttl  uint32 `json:"ttl,omitempty"`
 	Text string `json:"text"`
-}
-
-type CNAME_Record struct {
-	Ttl  uint32 `json:"ttl,omitempty"`
-	Host string `json:"host"`
 }
 
 type NS_Record struct {
@@ -69,7 +126,7 @@ type SOA_Record struct {
 }
 
 type CAA_Record struct {
-	Flag  uint8 `json:"flag"`
+	Flag  uint8  `json:"flag"`
 	Tag   string `json:"tag"`
 	Value string `json:"value"`
 }

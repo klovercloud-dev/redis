@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/miekg/dns"
+	"net"
 	"strings"
 	"time"
 
+	"example.com/ipLocationService"
 	"github.com/coredns/coredns/plugin"
 
 	redisCon "github.com/gomodule/redigo/redis"
@@ -29,7 +31,7 @@ type Redis struct {
 func (redis *Redis) LoadZones() {
 	var (
 		reply interface{}
-		err error
+		err   error
 		zones []string
 	)
 
@@ -40,7 +42,7 @@ func (redis *Redis) LoadZones() {
 	}
 	defer conn.Close()
 
-	reply, err = conn.Do("KEYS", redis.keyPrefix + "*" + redis.keySuffix)
+	reply, err = conn.Do("KEYS", redis.keyPrefix+"*"+redis.keySuffix)
 	if err != nil {
 		return
 	}
@@ -53,16 +55,94 @@ func (redis *Redis) LoadZones() {
 	redis.Zones = zones
 }
 
-func (redis *Redis) A(name string, z *Zone, record *Record) (answers, extras []dns.RR) {
-	for _, a := range record.A {
-		if a.Ip == nil {
-			continue
+func (redis *Redis) A(name string, z *Zone, record *Record, w dns.ResponseWriter) (answers, extras []dns.RR) {
+	if record.A.Type == "SIMPLE" {
+		valueBytes, _ := json.Marshal(record.A)
+
+		aGeneral := General_A_Record{}
+		fmt.Println("---------")
+		fmt.Println(string(valueBytes))
+		err := json.Unmarshal(valueBytes, &aGeneral)
+		if err != nil {
+			fmt.Println("this error")
+			fmt.Println(err.Error())
 		}
-		r := new(dns.A)
-		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
-			Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
-		r.A = a.Ip
-		answers = append(answers, r)
+
+		for _, a := range aGeneral.Value {
+			fmt.Println(a.Ip)
+			if a.Ip == nil {
+				continue
+			}
+			r := new(dns.A)
+			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
+				Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
+			r.A = a.Ip
+			answers = append(answers, r)
+		}
+		return
+	} else if record.A.Type == "FAIL_OVER" {
+		valueBytes, _ := json.Marshal(record.A.Value)
+
+		aFailOver := FailOver_A_Record{}
+		fmt.Println("---------")
+		fmt.Println(record)
+		err := json.Unmarshal(valueBytes, &aFailOver)
+		if err != nil {
+			fmt.Println("this error")
+			fmt.Println(err.Error())
+		}
+
+		data := &aFailOver.Primary.Data
+		if !aFailOver.Primary.IsHealthy {
+			data = &aFailOver.Secondary.Data
+		}
+
+		for _, a := range *data {
+			fmt.Println(a.Ip)
+			if a.Ip == nil {
+				continue
+			}
+			r := new(dns.A)
+			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
+				Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
+			r.A = a.Ip
+			answers = append(answers, r)
+		}
+		return
+	} else if record.A.Type == "GEO_LOCATION" {
+		valueBytes, _ := json.Marshal(record.A.Value)
+		geo := Geo_Location{}
+		json.Unmarshal(valueBytes, &geo)
+
+		fmt.Println("ip : ", w.RemoteAddr())
+
+		//BD
+		//clientLocation := ipLocationService.GetCountry(net.ParseIP("113.21.230.206"))
+		//US
+		//clientLocation := ipLocationService.GetCountry(net.ParseIP("5.10.232.0"))
+		//AU
+		clientLocation := ipLocationService.GetCountry(net.ParseIP("1.0.4.0"))
+
+		fmt.Println("Server Found Country: ", clientLocation)
+
+		if geo.Value[clientLocation] == nil {
+			clientLocation = "default"
+		}
+
+		fmt.Println("client loaction: ", clientLocation)
+
+		for _, a := range geo.Value[clientLocation] {
+			fmt.Println(a.Ip)
+			if a.Ip == nil {
+				continue
+			}
+			r := new(dns.A)
+			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
+				Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
+			r.A = a.Ip
+			answers = append(answers, r)
+		}
+		return
 	}
 	return
 }
@@ -82,16 +162,118 @@ func (redis Redis) AAAA(name string, z *Zone, record *Record) (answers, extras [
 }
 
 func (redis *Redis) CNAME(name string, z *Zone, record *Record) (answers, extras []dns.RR) {
-	for _, cname := range record.CNAME {
-		if len(cname.Host) == 0 {
-			continue
+	fmt.Println("outside simple")
+	if record.CNAME.Type == "SIMPLE" {
+		fmt.Println("indise simple")
+		valueBytes, _ := json.Marshal(record.CNAME)
+
+		cnameGeneral := Simple_CNAME_Record{}
+		fmt.Println("---------")
+		fmt.Println(string(valueBytes))
+		err := json.Unmarshal(valueBytes, &cnameGeneral)
+		fmt.Println(cnameGeneral)
+		if err != nil {
+			fmt.Println("this error")
+			fmt.Println(err.Error())
 		}
-		r := new(dns.CNAME)
-		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
-			Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
-		r.Target = dns.Fqdn(cname.Host)
-		answers = append(answers, r)
+
+		for _, cname := range cnameGeneral.Value {
+			if len(cname.Host) == 0 {
+				continue
+			}
+			r := new(dns.CNAME)
+			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
+				Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
+			r.Target = dns.Fqdn(cname.Host)
+			fmt.Println("cname host: ", cname.Host)
+			answers = append(answers, r)
+		}
+		return
+	} else if record.CNAME.Type == "FAIL_OVER" {
+		valueBytes, _ := json.Marshal(record.CNAME.Value)
+
+		cnameFailOver := FailOver_CNAME_Record{}
+		fmt.Println("---------")
+		fmt.Println(record)
+		err := json.Unmarshal(valueBytes, &cnameFailOver)
+		if err != nil {
+			fmt.Println("this error")
+			fmt.Println(err.Error())
+		}
+
+		data := &cnameFailOver.Primary.Data
+		if !cnameFailOver.Primary.IsHealthy {
+			data = &cnameFailOver.Secondary.Data
+		}
+
+		for _, cname := range *data {
+			if len(cname.Host) == 0 {
+				continue
+			}
+			r := new(dns.CNAME)
+			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
+				Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
+			r.Target = dns.Fqdn(cname.Host)
+			answers = append(answers, r)
+		}
+		return
+	} else if record.CNAME.Type == "GEO_LOCATION" {
+		valueBytes, _ := json.Marshal(record.CNAME.Value)
+		geo_cname := Geo_Location_CNAME{}
+		json.Unmarshal(valueBytes, &geo_cname)
+
+		//fmt.Println("ip : ", w.RemoteAddr())
+
+		//BD
+		//clientLocation := ipLocationService.GetCountry(net.ParseIP("113.21.230.206"))
+		//US
+		clientLocation := ipLocationService.GetCountry(net.ParseIP("5.10.232.0"))
+		//AU
+		//clientLocation := ipLocationService.GetCountry(net.ParseIP("1.0.4.0"))
+
+		fmt.Println("Server Found Country: ", clientLocation)
+
+		if geo_cname.Value[clientLocation] == nil {
+			clientLocation = "default"
+		}
+
+		fmt.Println("client loaction: ", clientLocation)
+
+		//for _, a := range geo.Value[clientLocation] {
+		//	fmt.Println(a.Ip)
+		//	if a.Ip == nil {
+		//		continue
+		//	}
+		//	r := new(dns.A)
+		//	r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
+		//		Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
+		//	r.A = a.Ip
+		//	answers = append(answers, r)
+		//}
+
+		for _, cname := range geo_cname.Value[clientLocation] {
+			if len(cname.Host) == 0 {
+				continue
+			}
+			r := new(dns.CNAME)
+			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
+				Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
+			r.Target = dns.Fqdn(cname.Host)
+			answers = append(answers, r)
+		}
+		return
 	}
+
+	//for _, cname := range record.CNAME {
+	//	if len(cname.Host) == 0 {
+	//		continue
+	//	}
+	//	r := new(dns.CNAME)
+	//	r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
+	//		Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
+	//	r.Target = dns.Fqdn(cname.Host)
+	//	answers = append(answers, r)
+	//}
 	return
 }
 
@@ -100,7 +282,7 @@ func (redis *Redis) TXT(name string, z *Zone, record *Record) (answers, extras [
 		if len(txt.Text) == 0 {
 			continue
 		}
-		r:= new(dns.TXT)
+		r := new(dns.TXT)
 		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeTXT,
 			Class: dns.ClassINET, Ttl: redis.minTtl(txt.Ttl)}
 		r.Txt = split255(txt.Text)
@@ -189,7 +371,7 @@ func (redis *Redis) CAA(name string, z *Zone, record *Record) (answers, extras [
 		return
 	}
 	for _, caa := range record.CAA {
-		if caa.Value == "" || caa.Tag == ""{
+		if caa.Value == "" || caa.Tag == "" {
 			continue
 		}
 		r := new(dns.CAA)
@@ -211,7 +393,7 @@ func (redis *Redis) AXFR(z *Zone) (records []dns.RR) {
 	// Allocate slices for rr Records
 	records = append(records, soa...)
 	for key := range z.Locations {
-		if key == "@"  {
+		if key == "@" {
 			location := redis.findLocation(z.Name, z)
 			record := redis.get(location, z)
 			soa, _ = redis.SOA(z.Name, z, record)
@@ -224,7 +406,7 @@ func (redis *Redis) AXFR(z *Zone) (records []dns.RR) {
 			record := redis.get(location, z)
 
 			// Pull all zone records
-			as, xs = redis.A(fqdnKey, z, record)
+			as, xs = redis.A(fqdnKey, z, record, nil)
 			answers = append(answers, as...)
 			extras = append(extras, xs...)
 
@@ -256,12 +438,12 @@ func (redis *Redis) AXFR(z *Zone) (records []dns.RR) {
 	records = append(records, soa...)
 
 	fmt.Println(records)
- 	return
+	return
 }
 
 func (redis *Redis) hosts(name string, z *Zone) []dns.RR {
 	var (
-		record *Record
+		record  *Record
 		answers []dns.RR
 	)
 	location := redis.findLocation(name, z)
@@ -269,7 +451,7 @@ func (redis *Redis) hosts(name string, z *Zone) []dns.RR {
 		return nil
 	}
 	record = redis.get(location, z)
-	a, _ := redis.A(name, z, record)
+	a, _ := redis.A(name, z, record, nil)
 	answers = append(answers, a...)
 	aaaa, _ := redis.AAAA(name, z, record)
 	answers = append(answers, aaaa...)
@@ -295,12 +477,12 @@ func (redis *Redis) minTtl(ttl uint32) uint32 {
 	if redis.Ttl < ttl {
 		return redis.Ttl
 	}
-	return  ttl
+	return ttl
 }
 
 func (redis *Redis) findLocation(query string, z *Zone) string {
 	var (
-		ok bool
+		ok                                 bool
 		closestEncloser, sourceOfSynthesis string
 	)
 
@@ -309,7 +491,7 @@ func (redis *Redis) findLocation(query string, z *Zone) string {
 		return query
 	}
 
-	query = strings.TrimSuffix(query, "." + z.Name)
+	query = strings.TrimSuffix(query, "."+z.Name)
 
 	if _, ok = z.Locations[query]; ok {
 		return query
@@ -334,9 +516,9 @@ func (redis *Redis) findLocation(query string, z *Zone) string {
 
 func (redis *Redis) get(key string, z *Zone) *Record {
 	var (
-		err error
+		err   error
 		reply interface{}
-		val string
+		val   string
 	)
 	conn := redis.Pool.Get()
 	if conn == nil {
@@ -352,7 +534,7 @@ func (redis *Redis) get(key string, z *Zone) *Record {
 		label = key
 	}
 
-	reply, err = conn.Do("HGET", redis.keyPrefix + z.Name + redis.keySuffix, label)
+	reply, err = conn.Do("HGET", redis.keyPrefix+z.Name+redis.keySuffix, label)
 	if err != nil {
 		return nil
 	}
@@ -361,8 +543,12 @@ func (redis *Redis) get(key string, z *Zone) *Record {
 		return nil
 	}
 	r := new(Record)
+
+	fmt.Println(val)
+
 	err = json.Unmarshal([]byte(val), r)
 	if err != nil {
+		fmt.Println("error here.....")
 		fmt.Println("parse error : ", val, err)
 		return nil
 	}
@@ -388,8 +574,8 @@ func splitQuery(query string) (string, string, bool) {
 		return "", "", false
 	}
 	var (
-		splits []string
-		closestEncloser string
+		splits            []string
+		closestEncloser   string
 		sourceOfSynthesis string
 	)
 	splits = strings.SplitAfterN(query, ".", 2)
@@ -405,7 +591,7 @@ func splitQuery(query string) (string, string, bool) {
 
 func (redis *Redis) Connect() {
 	redis.Pool = &redisCon.Pool{
-		Dial: func () (redisCon.Conn, error) {
+		Dial: func() (redisCon.Conn, error) {
 			opts := []redisCon.DialOption{}
 			if redis.redisPassword != "" {
 				opts = append(opts, redisCon.DialPassword(redis.redisPassword))
@@ -432,15 +618,15 @@ func (redis *Redis) save(zone string, subdomain string, value string) error {
 	}
 	defer conn.Close()
 
-	_, err = conn.Do("HSET", redis.keyPrefix + zone + redis.keySuffix, subdomain, value)
+	_, err = conn.Do("HSET", redis.keyPrefix+zone+redis.keySuffix, subdomain, value)
 	return err
 }
 
 func (redis *Redis) load(zone string) *Zone {
 	var (
 		reply interface{}
-		err error
-		vals []string
+		err   error
+		vals  []string
 	)
 
 	conn := redis.Pool.Get()
@@ -450,7 +636,7 @@ func (redis *Redis) load(zone string) *Zone {
 	}
 	defer conn.Close()
 
-	reply, err = conn.Do("HKEYS", redis.keyPrefix + zone + redis.keySuffix)
+	reply, err = conn.Do("HKEYS", redis.keyPrefix+zone+redis.keySuffix)
 	if err != nil {
 		return nil
 	}
@@ -489,8 +675,8 @@ func split255(s string) []string {
 }
 
 const (
-	defaultTtl = 360
-	hostmaster = "hostmaster"
-	zoneUpdateTime = 10*time.Minute
+	defaultTtl     = 360
+	hostmaster     = "hostmaster"
+	zoneUpdateTime = 10 * time.Minute
 	transferLength = 1000
 )

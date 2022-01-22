@@ -2,7 +2,6 @@ package redis
 
 import (
 	"fmt"
-	// "fmt"
 	"time"
 
 	"github.com/coredns/coredns/plugin"
@@ -15,6 +14,11 @@ import (
 func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 
+	//go checkHealth(redis)
+	fmt.Println("This is local redis plugin - v2")
+	fmt.Println(w.RemoteAddr())
+	fmt.Println(redis)
+
 	qname := state.Name()
 	qtype := state.Type()
 
@@ -23,15 +27,18 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	}
 
 	zone := plugin.Zones(redis.Zones).Matches(qname)
-	// fmt.Println("zone : ", zone)
+	fmt.Println("zone : ", zone)
 	if zone == "" {
 		return plugin.NextOrFailure(qname, redis.Next, ctx, w, r)
 	}
 
+	fmt.Println("loading zone")
 	z := redis.load(zone)
 	if z == nil {
 		return redis.errorResponse(state, zone, dns.RcodeServerFailure, nil)
 	}
+
+	fmt.Println("zone loaded: ", z)
 
 	if qtype == "AXFR" {
 		records := redis.AXFR(z)
@@ -65,19 +72,25 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 		return dns.RcodeSuccess, nil
 	}
 
+	fmt.Println("finding location", qname, qtype, z)
+
 	location := redis.findLocation(qname, z)
 	if len(location) == 0 { // empty, no results
+		fmt.Println("No location found")
 		return redis.errorResponse(state, zone, dns.RcodeNameError, nil)
 	}
 
 	answers := make([]dns.RR, 0, 10)
 	extras := make([]dns.RR, 0, 10)
 
+	fmt.Println("getting location")
 	record := redis.get(location, z)
+
+	fmt.Println("qtype:", qtype)
 
 	switch qtype {
 	case "A":
-		answers, extras = redis.A(qname, z, record)
+		answers, extras = redis.A(qname, z, record, w)
 	case "AAAA":
 		answers, extras = redis.AAAA(qname, z, record)
 	case "CNAME":
