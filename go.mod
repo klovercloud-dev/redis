@@ -1,4 +1,4 @@
-module github.com/saiful-islam-niloy/redis.git
+module  github.com/klovercloud-dev/redis
 
 go 1.17
 
