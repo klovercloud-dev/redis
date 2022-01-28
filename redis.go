@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"example.com/ipLocationService"
 	"github.com/coredns/coredns/plugin"
+	"github.com/klovercloud-dev/get-ip-region"
 
 	redisCon "github.com/gomodule/redigo/redis"
 )
