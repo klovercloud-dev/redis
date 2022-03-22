@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"github.com/klovercloud-dev/redis/enums"
 	"strconv"
 
 	"github.com/coredns/caddy"
@@ -9,14 +10,14 @@ import (
 	clog "github.com/coredns/coredns/plugin/pkg/log"
 )
 
-var log = clog.NewWithPlugin("redis")
+var log = clog.NewWithPlugin(enums.REDIS)
 
-func init() { plugin.Register("redis", setup) }
+func init() { plugin.Register(enums.REDIS, setup) }
 
 func setup(c *caddy.Controller) error {
 	r, err := redisParse(c)
 	if err != nil {
-		return plugin.Error("redis", err)
+		return plugin.Error(enums.REDIS, err)
 	}
 
 	dnsserver.GetConfig(c).AddPlugin(func(next plugin.Handler) plugin.Handler {
@@ -33,10 +34,7 @@ func redisParse(c *caddy.Controller) (*Redis, error) {
 		keySuffix: "",
 		Ttl:       300,
 	}
-	var (
-		err error
-	)
-
+	var err error
 	for c.Next() {
 		if c.NextBlock() {
 			for {
@@ -84,7 +82,7 @@ func redisParse(c *caddy.Controller) (*Redis, error) {
 					var val int
 					val, err = strconv.Atoi(c.Val())
 					if err != nil {
-						val = defaultTtl
+						val = enums.DefaultTtl
 					}
 					redis.Ttl = uint32(val)
 				default:
@@ -99,10 +97,8 @@ func redisParse(c *caddy.Controller) (*Redis, error) {
 			}
 
 		}
-
 		redis.Connect()
 		redis.LoadZones()
-
 		return &redis, nil
 	}
 	return &Redis{}, nil

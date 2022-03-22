@@ -3,6 +3,7 @@ package redis
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/klovercloud-dev/redis/enums"
 	"github.com/miekg/dns"
 	"net"
 	"strings"
@@ -37,17 +38,17 @@ func (redis *Redis) LoadZones() {
 
 	conn := redis.Pool.Get()
 	if conn == nil {
-		fmt.Println("error connecting to redis")
 		return
 	}
 	defer conn.Close()
 
-	reply, err = conn.Do("KEYS", redis.keyPrefix+"*"+redis.keySuffix)
+	reply, err = conn.Do(string(enums.KEYS), redis.keyPrefix+"*"+redis.keySuffix)
 	if err != nil {
-		return
+		fmt.Println(err)
 	}
+
 	zones, err = redisCon.Strings(reply, nil)
-	for i, _ := range zones {
+	for i := range zones {
 		zones[i] = strings.TrimPrefix(zones[i], redis.keyPrefix)
 		zones[i] = strings.TrimSuffix(zones[i], redis.keySuffix)
 	}
@@ -56,93 +57,92 @@ func (redis *Redis) LoadZones() {
 }
 
 func (redis *Redis) A(name string, z *Zone, record *Record, w dns.ResponseWriter) (answers, extras []dns.RR) {
-	if record.A.Type == "SIMPLE" {
-		valueBytes, _ := json.Marshal(record.A)
+	if record.A.Type == string(enums.SIMPLE) {
+		redis.ASimple(name, record)
+	} else if record.A.Type == string(enums.FAIL_OVER) {
+		redis.AFailOver(name, record)
+	} else if record.A.Type == string(enums.GEO_LOCATION) {
+		redis.AFailOver(name, record)
+	}
+	return
+}
 
-		aGeneral := General_A_Record{}
-		fmt.Println("---------")
-		fmt.Println(string(valueBytes))
-		err := json.Unmarshal(valueBytes, &aGeneral)
-		if err != nil {
-			fmt.Println("this error")
-			fmt.Println(err.Error())
+func (redis *Redis) ASimple(name string, record *Record) (answers []dns.RR) {
+	valueBytes, _ := json.Marshal(record.A)
+
+	aGeneral := General_A_Record{}
+
+	err := json.Unmarshal(valueBytes, &aGeneral)
+
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+
+	for _, aName := range aGeneral.Value {
+		if aName.Ip == nil {
+			continue
 		}
+		r := new(dns.A)
+		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
+			Class: dns.ClassINET, Ttl: redis.minTtl(aName.Ttl)}
+		r.A = aName.Ip
+		answers = append(answers, r)
+	}
+	return
+}
 
-		for _, a := range aGeneral.Value {
-			fmt.Println(a.Ip)
-			if a.Ip == nil {
-				continue
-			}
-			r := new(dns.A)
-			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
-				Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
-			r.A = a.Ip
-			answers = append(answers, r)
+func (redis *Redis) AFailOver(name string, record *Record) (answers []dns.RR) {
+	valueBytes, _ := json.Marshal(record.A.Value)
+
+	aFailOver := FailOver_A_Record{}
+
+	err := json.Unmarshal(valueBytes, &aFailOver)
+	if err != nil {
+		fmt.Println(err.Error())
+	}
+
+	data := &aFailOver.Primary.Data
+	if !aFailOver.Primary.IsHealthy {
+		data = &aFailOver.Secondary.Data
+	}
+
+	for _, a := range *data {
+
+		if a.Ip == nil {
+			continue
 		}
-		return
-	} else if record.A.Type == "FAIL_OVER" {
-		valueBytes, _ := json.Marshal(record.A.Value)
+		r := new(dns.A)
+		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
+			Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
+		r.A = a.Ip
+		answers = append(answers, r)
+	}
+	return
+}
 
-		aFailOver := FailOver_A_Record{}
-		fmt.Println("---------")
-		fmt.Println(record)
-		err := json.Unmarshal(valueBytes, &aFailOver)
-		if err != nil {
-			fmt.Println("this error")
-			fmt.Println(err.Error())
+func (redis *Redis) AGeoLocation(name string, record *Record) (answers []dns.RR) {
+	valueBytes, _ := json.Marshal(record.A.Value)
+	geo := Geo_Location{}
+
+	err := json.Unmarshal(valueBytes, &geo)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	clientLocation := ipLocationService.GetCountry(net.ParseIP("1.0.4.0"))
+
+	if geo.Value[clientLocation] == nil {
+		clientLocation = "default"
+	}
+	for _, a := range geo.Value[clientLocation] {
+		if a.Ip == nil {
+			continue
 		}
-
-		data := &aFailOver.Primary.Data
-		if !aFailOver.Primary.IsHealthy {
-			data = &aFailOver.Secondary.Data
-		}
-
-		for _, a := range *data {
-			fmt.Println(a.Ip)
-			if a.Ip == nil {
-				continue
-			}
-			r := new(dns.A)
-			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
-				Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
-			r.A = a.Ip
-			answers = append(answers, r)
-		}
-		return
-	} else if record.A.Type == "GEO_LOCATION" {
-		valueBytes, _ := json.Marshal(record.A.Value)
-		geo := Geo_Location{}
-		json.Unmarshal(valueBytes, &geo)
-
-		fmt.Println("ip : ", w.RemoteAddr())
-
-		//BD
-		//clientLocation := ipLocationService.GetCountry(net.ParseIP("113.21.230.206"))
-		//US
-		//clientLocation := ipLocationService.GetCountry(net.ParseIP("5.10.232.0"))
-		//AU
-		clientLocation := ipLocationService.GetCountry(net.ParseIP("1.0.4.0"))
-
-		fmt.Println("Server Found Country: ", clientLocation)
-
-		if geo.Value[clientLocation] == nil {
-			clientLocation = "default"
-		}
-
-		fmt.Println("client loaction: ", clientLocation)
-
-		for _, a := range geo.Value[clientLocation] {
-			fmt.Println(a.Ip)
-			if a.Ip == nil {
-				continue
-			}
-			r := new(dns.A)
-			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
-				Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
-			r.A = a.Ip
-			answers = append(answers, r)
-		}
-		return
+		r := new(dns.A)
+		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
+			Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
+		r.A = a.Ip
+		answers = append(answers, r)
 	}
 	return
 }
@@ -162,118 +162,92 @@ func (redis Redis) AAAA(name string, z *Zone, record *Record) (answers, extras [
 }
 
 func (redis *Redis) CNAME(name string, z *Zone, record *Record) (answers, extras []dns.RR) {
-	fmt.Println("outside simple")
-	if record.CNAME.Type == "SIMPLE" {
-		fmt.Println("indise simple")
-		valueBytes, _ := json.Marshal(record.CNAME)
+	if record.CNAME.Type == string(enums.SIMPLE) {
+		redis.CNAMESimple(name, record)
+	} else if record.CNAME.Type == string(enums.FAIL_OVER) {
+		redis.CNAMEFailOver(name, record)
+	} else if record.CNAME.Type == string(enums.GEO_LOCATION) {
+		redis.CNAMEGeoLocation(name, record)
+	}
+	return
+}
 
-		cnameGeneral := Simple_CNAME_Record{}
-		fmt.Println("---------")
-		fmt.Println(string(valueBytes))
-		err := json.Unmarshal(valueBytes, &cnameGeneral)
-		fmt.Println(cnameGeneral)
-		if err != nil {
-			fmt.Println("this error")
-			fmt.Println(err.Error())
-		}
+func (redis *Redis) CNAMESimple(name string, record *Record) (answers []dns.RR) {
+	valueBytes, _ := json.Marshal(record.CNAME)
 
-		for _, cname := range cnameGeneral.Value {
-			if len(cname.Host) == 0 {
-				continue
-			}
-			r := new(dns.CNAME)
-			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
-				Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
-			r.Target = dns.Fqdn(cname.Host)
-			fmt.Println("cname host: ", cname.Host)
-			answers = append(answers, r)
-		}
-		return
-	} else if record.CNAME.Type == "FAIL_OVER" {
-		valueBytes, _ := json.Marshal(record.CNAME.Value)
+	cnameGeneral := Simple_CNAME_Record{}
 
-		cnameFailOver := FailOver_CNAME_Record{}
-		fmt.Println("---------")
-		fmt.Println(record)
-		err := json.Unmarshal(valueBytes, &cnameFailOver)
-		if err != nil {
-			fmt.Println("this error")
-			fmt.Println(err.Error())
-		}
+	err := json.Unmarshal(valueBytes, &cnameGeneral)
 
-		data := &cnameFailOver.Primary.Data
-		if !cnameFailOver.Primary.IsHealthy {
-			data = &cnameFailOver.Secondary.Data
-		}
-
-		for _, cname := range *data {
-			if len(cname.Host) == 0 {
-				continue
-			}
-			r := new(dns.CNAME)
-			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
-				Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
-			r.Target = dns.Fqdn(cname.Host)
-			answers = append(answers, r)
-		}
-		return
-	} else if record.CNAME.Type == "GEO_LOCATION" {
-		valueBytes, _ := json.Marshal(record.CNAME.Value)
-		geo_cname := Geo_Location_CNAME{}
-		json.Unmarshal(valueBytes, &geo_cname)
-
-		//fmt.Println("ip : ", w.RemoteAddr())
-
-		//BD
-		//clientLocation := ipLocationService.GetCountry(net.ParseIP("113.21.230.206"))
-		//US
-		clientLocation := ipLocationService.GetCountry(net.ParseIP("5.10.232.0"))
-		//AU
-		//clientLocation := ipLocationService.GetCountry(net.ParseIP("1.0.4.0"))
-
-		fmt.Println("Server Found Country: ", clientLocation)
-
-		if geo_cname.Value[clientLocation] == nil {
-			clientLocation = "default"
-		}
-
-		fmt.Println("client loaction: ", clientLocation)
-
-		//for _, a := range geo.Value[clientLocation] {
-		//	fmt.Println(a.Ip)
-		//	if a.Ip == nil {
-		//		continue
-		//	}
-		//	r := new(dns.A)
-		//	r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeA,
-		//		Class: dns.ClassINET, Ttl: redis.minTtl(a.Ttl)}
-		//	r.A = a.Ip
-		//	answers = append(answers, r)
-		//}
-
-		for _, cname := range geo_cname.Value[clientLocation] {
-			if len(cname.Host) == 0 {
-				continue
-			}
-			r := new(dns.CNAME)
-			r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
-				Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
-			r.Target = dns.Fqdn(cname.Host)
-			answers = append(answers, r)
-		}
-		return
+	if err != nil {
+		fmt.Println(err)
 	}
 
-	//for _, cname := range record.CNAME {
-	//	if len(cname.Host) == 0 {
-	//		continue
-	//	}
-	//	r := new(dns.CNAME)
-	//	r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
-	//		Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
-	//	r.Target = dns.Fqdn(cname.Host)
-	//	answers = append(answers, r)
-	//}
+	for _, cName := range cnameGeneral.Value {
+		if len(cName.Host) == 0 {
+			continue
+		}
+		r := new(dns.CNAME)
+		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
+			Class: dns.ClassINET, Ttl: redis.minTtl(cName.Ttl)}
+		r.Target = dns.Fqdn(cName.Host)
+		answers = append(answers, r)
+	}
+	return
+}
+
+func (redis *Redis) CNAMEFailOver(name string, record *Record) (answers []dns.RR) {
+	valueBytes, _ := json.Marshal(record.CNAME.Value)
+
+	cnameFailOver := FailOver_CNAME_Record{}
+
+	err := json.Unmarshal(valueBytes, &cnameFailOver)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	data := &cnameFailOver.Primary.Data
+	if !cnameFailOver.Primary.IsHealthy {
+		data = &cnameFailOver.Secondary.Data
+	}
+
+	for _, cname := range *data {
+		if len(cname.Host) == 0 {
+			continue
+		}
+		r := new(dns.CNAME)
+		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
+			Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
+		r.Target = dns.Fqdn(cname.Host)
+		answers = append(answers, r)
+	}
+	return
+}
+
+func (redis *Redis) CNAMEGeoLocation(name string, record *Record) (answers []dns.RR) {
+	valueBytes, _ := json.Marshal(record.CNAME.Value)
+	geoCname := Geo_Location_CNAME{}
+
+	err := json.Unmarshal(valueBytes, &geoCname)
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	clientLocation := ipLocationService.GetCountry(net.ParseIP("5.10.232.0"))
+
+	if geoCname.Value[clientLocation] == nil {
+		clientLocation = "default"
+	}
+	for _, cname := range geoCname.Value[clientLocation] {
+		if len(cname.Host) == 0 {
+			continue
+		}
+		r := new(dns.CNAME)
+		r.Hdr = dns.RR_Header{Name: dns.Fqdn(name), Rrtype: dns.TypeCNAME,
+			Class: dns.ClassINET, Ttl: redis.minTtl(cname.Ttl)}
+		r.Target = dns.Fqdn(cname.Host)
+		answers = append(answers, r)
+	}
 	return
 }
 
@@ -385,7 +359,6 @@ func (redis *Redis) CAA(name string, z *Zone, record *Record) (answers, extras [
 }
 
 func (redis *Redis) AXFR(z *Zone) (records []dns.RR) {
-	//soa, _ := redis.SOA(z.Name, z, record)
 	soa := make([]dns.RR, 0)
 	answers := make([]dns.RR, 0, 10)
 	extras := make([]dns.RR, 0, 10)
@@ -436,8 +409,6 @@ func (redis *Redis) AXFR(z *Zone) (records []dns.RR) {
 	records = append(records, answers...)
 	records = append(records, extras...)
 	records = append(records, soa...)
-
-	fmt.Println(records)
 	return
 }
 
@@ -466,7 +437,7 @@ func (redis *Redis) serial() uint32 {
 
 func (redis *Redis) minTtl(ttl uint32) uint32 {
 	if redis.Ttl == 0 && ttl == 0 {
-		return defaultTtl
+		return enums.DefaultTtl
 	}
 	if redis.Ttl == 0 {
 		return ttl
@@ -485,7 +456,6 @@ func (redis *Redis) findLocation(query string, z *Zone) string {
 		ok                                 bool
 		closestEncloser, sourceOfSynthesis string
 	)
-
 	// request for zone records
 	if query == z.Name {
 		return query
@@ -534,7 +504,7 @@ func (redis *Redis) get(key string, z *Zone) *Record {
 		label = key
 	}
 
-	reply, err = conn.Do("HGET", redis.keyPrefix+z.Name+redis.keySuffix, label)
+	reply, err = conn.Do(string(enums.HGET), redis.keyPrefix+z.Name+redis.keySuffix, label)
 	if err != nil {
 		return nil
 	}
@@ -544,12 +514,8 @@ func (redis *Redis) get(key string, z *Zone) *Record {
 	}
 	r := new(Record)
 
-	fmt.Println(val)
-
 	err = json.Unmarshal([]byte(val), r)
 	if err != nil {
-		fmt.Println("error here.....")
-		fmt.Println("parse error : ", val, err)
 		return nil
 	}
 	return r
@@ -592,7 +558,7 @@ func splitQuery(query string) (string, string, bool) {
 func (redis *Redis) Connect() {
 	redis.Pool = &redisCon.Pool{
 		Dial: func() (redisCon.Conn, error) {
-			opts := []redisCon.DialOption{}
+			var opts []redisCon.DialOption
 			if redis.redisPassword != "" {
 				opts = append(opts, redisCon.DialPassword(redis.redisPassword))
 			}
@@ -613,12 +579,11 @@ func (redis *Redis) save(zone string, subdomain string, value string) error {
 
 	conn := redis.Pool.Get()
 	if conn == nil {
-		fmt.Println("error connecting to redis")
 		return nil
 	}
 	defer conn.Close()
 
-	_, err = conn.Do("HSET", redis.keyPrefix+zone+redis.keySuffix, subdomain, value)
+	_, err = conn.Do(string(enums.HSET), redis.keyPrefix+zone+redis.keySuffix, subdomain, value)
 	return err
 }
 
@@ -631,21 +596,23 @@ func (redis *Redis) load(zone string) *Zone {
 
 	conn := redis.Pool.Get()
 	if conn == nil {
-		fmt.Println("error connecting to redis")
+
 		return nil
 	}
 	defer conn.Close()
 
-	reply, err = conn.Do("HKEYS", redis.keyPrefix+zone+redis.keySuffix)
+	reply, err = conn.Do(string(enums.HKEYS), redis.keyPrefix+zone+redis.keySuffix)
 	if err != nil {
 		return nil
 	}
+
 	z := new(Zone)
 	z.Name = zone
 	vals, err = redisCon.Strings(reply, nil)
 	if err != nil {
 		return nil
 	}
+
 	z.Locations = make(map[string]struct{})
 	for _, val := range vals {
 		z.Locations[val] = struct{}{}
@@ -658,7 +625,7 @@ func split255(s string) []string {
 	if len(s) < 255 {
 		return []string{s}
 	}
-	sx := []string{}
+	var sx []string
 	p, i := 0, 255
 	for {
 		if i <= len(s) {
@@ -673,10 +640,3 @@ func split255(s string) []string {
 
 	return sx
 }
-
-const (
-	defaultTtl     = 360
-	hostmaster     = "hostmaster"
-	zoneUpdateTime = 10 * time.Minute
-	transferLength = 1000
-)

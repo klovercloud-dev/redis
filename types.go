@@ -24,14 +24,13 @@ type A_Record struct {
 	Ip  net.IP `json:"ip"`
 }
 
-type CNAME_Record struct {
-	Ttl  uint32 `json:"ttl,omitempty"`
-	Host string `json:"host"`
-}
-
 type New_A_Record struct {
 	Type  string
 	Value interface{}
+}
+type CNAME_Record struct {
+	Ttl  uint32 `json:"ttl,omitempty"`
+	Host string `json:"host"`
 }
 
 type New_CNAME_Record struct {

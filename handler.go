@@ -2,6 +2,7 @@ package redis
 
 import (
 	"fmt"
+	"github.com/klovercloud-dev/redis/enums"
 	"time"
 
 	"github.com/coredns/coredns/plugin"
@@ -14,31 +15,23 @@ import (
 func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 
-	//go checkHealth(redis)
-	fmt.Println("This is local redis plugin - v2")
-	fmt.Println(w.RemoteAddr())
-	fmt.Println(redis)
-
 	qname := state.Name()
 	qtype := state.Type()
 
-	if time.Since(redis.LastZoneUpdate) > zoneUpdateTime {
+	if time.Since(redis.LastZoneUpdate) > enums.ZoneUpdateTime {
 		redis.LoadZones()
 	}
 
 	zone := plugin.Zones(redis.Zones).Matches(qname)
-	fmt.Println("zone : ", zone)
+
 	if zone == "" {
 		return plugin.NextOrFailure(qname, redis.Next, ctx, w, r)
 	}
 
-	fmt.Println("loading zone")
 	z := redis.load(zone)
 	if z == nil {
 		return redis.errorResponse(state, zone, dns.RcodeServerFailure, nil)
 	}
-
-	fmt.Println("zone loaded: ", z)
 
 	if qtype == "AXFR" {
 		records := redis.AXFR(z)
@@ -52,7 +45,7 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 
 			for i, r := range records {
 				l += dns.Len(r)
-				if l > transferLength {
+				if l > enums.TransferLength {
 					ch <- &dns.Envelope{RR: records[j:i]}
 					l = 0
 					j = i
@@ -72,21 +65,15 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 		return dns.RcodeSuccess, nil
 	}
 
-	fmt.Println("finding location", qname, qtype, z)
-
 	location := redis.findLocation(qname, z)
-	if len(location) == 0 { // empty, no results
-		fmt.Println("No location found")
+	if len(location) == 0 {
 		return redis.errorResponse(state, zone, dns.RcodeNameError, nil)
 	}
 
 	answers := make([]dns.RR, 0, 10)
 	extras := make([]dns.RR, 0, 10)
 
-	fmt.Println("getting location")
 	record := redis.get(location, z)
-
-	fmt.Println("qtype:", qtype)
 
 	switch qtype {
 	case "A":
@@ -126,7 +113,7 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 }
 
 // Name implements the Handler interface.
-func (redis *Redis) Name() string { return "redis" }
+func (redis *Redis) Name() string { return enums.REDIS }
 
 func (redis *Redis) errorResponse(state request.Request, zone string, rcode int, err error) (int, error) {
 	m := new(dns.Msg)
@@ -135,6 +122,5 @@ func (redis *Redis) errorResponse(state request.Request, zone string, rcode int,
 
 	state.SizeAndDo(m)
 	_ = state.W.WriteMsg(m)
-	// Return success as the rcode to signal we have written to the client.
 	return dns.RcodeSuccess, err
 }
