@@ -38,13 +38,14 @@ func (redis *Redis) LoadZones() {
 
 	conn := redis.Pool.Get()
 	if conn == nil {
+		fmt.Println("error connecting to redis")
 		return
 	}
 	defer conn.Close()
 
 	reply, err = conn.Do(string(enums.KEYS), redis.keyPrefix+"*"+redis.keySuffix)
 	if err != nil {
-		fmt.Println(err)
+		return
 	}
 
 	zones, err = redisCon.Strings(reply, nil)
@@ -62,7 +63,7 @@ func (redis *Redis) A(name string, z *Zone, record *Record, w dns.ResponseWriter
 	} else if record.A.Type == string(enums.FAIL_OVER) {
 		redis.AFailOver(name, record)
 	} else if record.A.Type == string(enums.GEO_LOCATION) {
-		redis.AFailOver(name, record)
+		redis.AGeoLocation(name, record)
 	}
 	return
 }
@@ -107,7 +108,6 @@ func (redis *Redis) AFailOver(name string, record *Record) (answers []dns.RR) {
 	}
 
 	for _, a := range *data {
-
 		if a.Ip == nil {
 			continue
 		}
@@ -130,10 +130,12 @@ func (redis *Redis) AGeoLocation(name string, record *Record) (answers []dns.RR)
 	}
 
 	clientLocation := ipLocationService.GetCountry(net.ParseIP("1.0.4.0"))
+	fmt.Println("Server Found Country: ", clientLocation)
 
 	if geo.Value[clientLocation] == nil {
 		clientLocation = "default"
 	}
+	fmt.Println("Client location: ", clientLocation)
 	for _, a := range geo.Value[clientLocation] {
 		if a.Ip == nil {
 			continue
@@ -178,9 +180,8 @@ func (redis *Redis) CNAMESimple(name string, record *Record) (answers []dns.RR) 
 	cnameGeneral := Simple_CNAME_Record{}
 
 	err := json.Unmarshal(valueBytes, &cnameGeneral)
-
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println(err.Error())
 	}
 
 	for _, cName := range cnameGeneral.Value {
@@ -234,10 +235,13 @@ func (redis *Redis) CNAMEGeoLocation(name string, record *Record) (answers []dns
 	}
 
 	clientLocation := ipLocationService.GetCountry(net.ParseIP("5.10.232.0"))
+	fmt.Println("Server Found Country: ", clientLocation)
 
 	if geoCname.Value[clientLocation] == nil {
 		clientLocation = "default"
 	}
+	fmt.Println("Client location: ", clientLocation)
+
 	for _, cname := range geoCname.Value[clientLocation] {
 		if len(cname.Host) == 0 {
 			continue
@@ -409,6 +413,7 @@ func (redis *Redis) AXFR(z *Zone) (records []dns.RR) {
 	records = append(records, answers...)
 	records = append(records, extras...)
 	records = append(records, soa...)
+	fmt.Println(records)
 	return
 }
 
@@ -421,6 +426,7 @@ func (redis *Redis) hosts(name string, z *Zone) []dns.RR {
 	if location == "" {
 		return nil
 	}
+
 	record = redis.get(location, z)
 	a, _ := redis.A(name, z, record, nil)
 	answers = append(answers, a...)
@@ -428,6 +434,7 @@ func (redis *Redis) hosts(name string, z *Zone) []dns.RR {
 	answers = append(answers, aaaa...)
 	cname, _ := redis.CNAME(name, z, record)
 	answers = append(answers, cname...)
+
 	return answers
 }
 

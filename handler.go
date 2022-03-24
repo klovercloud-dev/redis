@@ -15,6 +15,10 @@ import (
 func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.Msg) (int, error) {
 	state := request.Request{W: w, Req: r}
 
+	//go checkHealth(redis)
+	fmt.Println("This is local redis plugin - v2")
+	fmt.Println(w.RemoteAddr(), redis)
+
 	qname := state.Name()
 	qtype := state.Type()
 
@@ -27,11 +31,12 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 	if zone == "" {
 		return plugin.NextOrFailure(qname, redis.Next, ctx, w, r)
 	}
-
+	fmt.Println("loading zone")
 	z := redis.load(zone)
 	if z == nil {
 		return redis.errorResponse(state, zone, dns.RcodeServerFailure, nil)
 	}
+	fmt.Println("zone loaded: ", z)
 
 	if qtype == "AXFR" {
 		records := redis.AXFR(z)
@@ -64,9 +69,10 @@ func (redis *Redis) ServeDNS(ctx context.Context, w dns.ResponseWriter, r *dns.M
 		w.Hijack()
 		return dns.RcodeSuccess, nil
 	}
-
+	fmt.Println("finding location", qname, qtype, z)
 	location := redis.findLocation(qname, z)
 	if len(location) == 0 {
+		fmt.Println("No location found")
 		return redis.errorResponse(state, zone, dns.RcodeNameError, nil)
 	}
 
@@ -122,5 +128,6 @@ func (redis *Redis) errorResponse(state request.Request, zone string, rcode int,
 
 	state.SizeAndDo(m)
 	_ = state.W.WriteMsg(m)
+	// Return success as the rcode to signal we have written to the client.
 	return dns.RcodeSuccess, err
 }
